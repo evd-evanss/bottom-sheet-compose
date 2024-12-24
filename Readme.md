@@ -15,7 +15,12 @@ Uma biblioteca Jetpack Compose simples e personalizável para criar BottomSheets
 ## Instalação
 
 Adicione a seguinte dependência ao seu arquivo `build.gradle.kts`:
-dependencies { implementation("com.sugarspoon:bottom.sheets:X.X.X" ) }
+
+```kotlin
+dependencies { 
+    implementation("com.github.evd-evanss:bottom-sheet-compose:latest-version" )
+}
+```
 
 ## Uso
 ```kotlin
