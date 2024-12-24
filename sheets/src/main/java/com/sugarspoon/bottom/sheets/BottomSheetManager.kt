@@ -52,6 +52,9 @@ internal class BottomSheetManager(private val context: Context) {
         onDismiss: () -> Unit,
         content: @Composable () -> Unit,
     ) {
+        val parentView = (context as Activity).findViewById<ViewGroup>(
+            android.R.id.content
+        )
         if (bottomSheetView == null) {
             bottomSheetView = ComposeView(context).apply {
                 setContent {
@@ -66,7 +69,7 @@ internal class BottomSheetManager(private val context: Context) {
                         visible = isVisible.value,
                         enter = slideInVertically(
                             animationSpec = tween(
-                                durationMillis = 400,
+                                durationMillis = 350,
                                 easing = EaseIn
                             )
                         ) {
@@ -74,7 +77,7 @@ internal class BottomSheetManager(private val context: Context) {
                         },
                         exit = slideOutVertically(
                             animationSpec = tween(
-                                durationMillis = 400,
+                                durationMillis = 350,
                                 easing = EaseOut
                             )
                         ) {
@@ -97,10 +100,6 @@ internal class BottomSheetManager(private val context: Context) {
             }
         }
 
-        val parentView = (context as Activity).findViewById<ViewGroup>(
-            android.R.id.content
-        )
-
         val layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -108,7 +107,6 @@ internal class BottomSheetManager(private val context: Context) {
             gravity = android.view.Gravity.BOTTOM
         }
 
-        // Verifica se o ComposeView já tem um pai
         (bottomSheetView?.parent as? ViewGroup)?.removeView(bottomSheetView)
 
         parentView.addView(dimView, layoutParams)
