@@ -17,16 +17,18 @@ dependencies { implementation("com.sugarspoon:bottom.sheets:X.X.X" ) }
 
 ## Uso
 ```kotlin
-@Composable 
-fun MyScreen() { 
-var isExpanded by remember { mutableStateOf(false)  }
+@Composable
+fun MyScreen() {
+    var isExpanded by remember { mutableStateOf(false) }
+
     BottomSheet(
         isExpanded = isExpanded,
         onDismiss = { isExpanded = false },
         content = {
-                Text("Olá, este é o conteúdo do BottomSheet!")
+            Text("Olá, este é o conteúdo do BottomSheet!")
         }
     )
+
     Button(onClick = { isExpanded = true }) {
         Text("Abrir BottomSheet")
     }
