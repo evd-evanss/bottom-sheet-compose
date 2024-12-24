@@ -41,7 +41,8 @@ android {
 
 dependencies {
 
-    implementation(project(":sheets"))
+    //implementation(project(":sheets"))
+    implementation("com.github.evd-evanss:bottom-sheet-compose:v0.0.1")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

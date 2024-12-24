@@ -2,6 +2,8 @@
 
 Uma biblioteca Jetpack Compose simples e personalizável para criar BottomSheets bonitos e funcionais em seus aplicativos Android.
 
+[![](https://jitpack.io/v/evd-evanss/bottom-sheet-compose.svg)](https://jitpack.io/#evd-evanss/bottom-sheet-compose)
+
 ## Recursos
 
 * Fácil de usar: basta adicionar o Composable `BottomSheet` ao seu layout.
