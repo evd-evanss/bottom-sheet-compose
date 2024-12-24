@@ -10,6 +10,7 @@ import androidx.compose.ui.tooling.preview.datasource.LoremIpsum
 import androidx.compose.ui.unit.dp
 import com.sugarspoon.bottom.sheet.components.Button
 import com.sugarspoon.bottom.sheet.components.TopBar
+import com.sugarspoon.bottom.sheets.BottomSheet
 
 @Composable
 fun SampleBottomSheet(
