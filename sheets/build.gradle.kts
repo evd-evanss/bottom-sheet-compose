@@ -1,8 +1,29 @@
+import com.android.utils.withResources
+
 plugins {
     id("maven-publish")
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                from(components["release"])
+                groupId = "com.github.evd-evanss"
+                artifactId = "bottom-sheet-composable"
+                version = "0.0.2"
+            }
+        }
+    }
+}
+
+publishing {
+    repositories {
+        mavenLocal()
+    }
 }
 
 android {
