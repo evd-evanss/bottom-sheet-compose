@@ -40,7 +40,8 @@ android {
 }
 
 dependencies {
-    implementation(libs.bottom.sheet.composable)
+    implementation(project(":sheets"))
+//    implementation(libs.bottom.sheet.composable)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

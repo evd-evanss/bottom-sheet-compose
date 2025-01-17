@@ -23,6 +23,18 @@ dependencies {
 ```
 
 ## Uso
+
+### Em sua principal Activity configurar o tema para edge-to-edge:
+```kotlin
+enableEdgeToEdge(
+    statusBarStyle = SystemBarStyle.light(
+        Color.Transparent.hashCode(),
+        Color.Transparent.hashCode()
+    ),
+)
+```
+
+### Em seu Composable
 ```kotlin
 @Composable
 fun MyScreen() {

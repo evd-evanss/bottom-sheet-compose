@@ -3,9 +3,10 @@ package com.sugarspoon.bottom.sheets
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
-import android.view.View
+import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.PopupWindow
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.EaseIn
 import androidx.compose.animation.core.EaseOut
@@ -13,10 +14,19 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,11 +35,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.Dp
@@ -39,13 +49,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-internal class BottomSheetManager(private val context: Context) {
+internal class BottomSheetManager(private val context: Context) : PopupWindow(context){
 
     private var bottomSheetView: ComposeView? = null
-    private var isVisible : MutableState<Boolean> = mutableStateOf(false)
-    private val dimView = View(context).apply {
-        setBackgroundColor(Color.Black.copy(alpha = 0.6f).toArgb())
-    }
+    private var isVisible: MutableState<Boolean> = mutableStateOf(false)
 
     fun showBottomSheet(
         cornerSize: Dp,
@@ -58,42 +65,57 @@ internal class BottomSheetManager(private val context: Context) {
         if (bottomSheetView == null) {
             bottomSheetView = ComposeView(context).apply {
                 setContent {
+
                     LaunchedEffect(true) {
                         launch {
-                            delay(100)
+                            delay(50)
                             isVisible.value = true
                         }
                     }
+                    val window = (context as Activity).window
+                    window.setBackgroundDrawableResource(android.R.color.transparent)
 
-                    AnimatedVisibility(
-                        visible = isVisible.value,
-                        enter = slideInVertically(
-                            animationSpec = tween(
-                                durationMillis = 350,
-                                easing = EaseIn
-                            )
-                        ) {
-                            it
-                        },
-                        exit = slideOutVertically(
-                            animationSpec = tween(
-                                durationMillis = 350,
-                                easing = EaseOut
-                            )
-                        ) {
-                            it
-                        }
+                    Box(
+                        contentAlignment = Alignment.BottomCenter
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .draggableBottomSheetContent {
-                                    onDismiss()
-                                }
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(topStart = cornerSize, topEnd = cornerSize))
-                                .background(Color.White)
+                        DimView(onDismiss =  onDismiss)
+                        AnimatedVisibility(
+                            modifier = Modifier,
+                            visible = isVisible.value,
+                            enter = slideInVertically(
+                                animationSpec = tween(
+                                    durationMillis = 350,
+                                    easing = EaseIn
+                                )
+                            ) {
+                                it
+                            },
+                            exit = slideOutVertically(
+                                animationSpec = tween(
+                                    durationMillis = 350,
+                                    easing = EaseOut
+                                )
+                            ) {
+                                it
+                            }
                         ) {
-                            content()
+                            Box(
+                                modifier = Modifier
+                                    .draggableBottomSheetContent {
+                                        onDismiss()
+                                    }
+                                    .fillMaxWidth()
+                                    .clip(
+                                        RoundedCornerShape(
+                                            topStart = cornerSize,
+                                            topEnd = cornerSize
+                                        )
+                                    )
+                                    .background(Color.White),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                content()
+                            }
                         }
                     }
                 }
@@ -104,16 +126,12 @@ internal class BottomSheetManager(private val context: Context) {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply {
-            gravity = android.view.Gravity.BOTTOM
+            gravity = Gravity.BOTTOM
         }
 
         (bottomSheetView?.parent as? ViewGroup)?.removeView(bottomSheetView)
 
-        parentView.addView(dimView, layoutParams)
         parentView.addView(bottomSheetView, layoutParams)
-        dimView.setOnClickListener {
-            onDismiss()
-        }
     }
 
     fun hideBottomSheet() {
@@ -121,7 +139,6 @@ internal class BottomSheetManager(private val context: Context) {
             bottomSheetView?.let {
                 isVisible.value = false
                 val parentView = it.parent as? ViewGroup
-                parentView?.removeView(dimView)
                 delay(200)
                 parentView?.removeView(it)
                 bottomSheetView = null
@@ -158,3 +175,29 @@ internal class BottomSheetManager(private val context: Context) {
             .offset { IntOffset(x = 0, y = dragOffset.toInt()) }
     }
 }
+
+@Composable
+fun DimView(
+    dimAmount: Float = 0.6f,
+    isVisible: Boolean = true,
+    onDismiss: () -> Unit = {}
+) {
+    if (isVisible) {
+        Box(
+            modifier = Modifier
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) {
+                    onDismiss()
+                }
+                .fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.statusBars.union(WindowInsets.navigationBars)
+                        .exclude(WindowInsets.statusBars.union(WindowInsets.navigationBars))
+                )
+                .background(Color.Black.copy(alpha = dimAmount))
+        )
+    }
+}
+
