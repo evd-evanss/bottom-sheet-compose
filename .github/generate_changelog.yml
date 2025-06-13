@@ -1,0 +1,183 @@
+name: Generate Changelog and Update PR Body
+
+on:
+  pull_request:
+    types: [opened, synchronize] # 'opened' para novos PRs, 'synchronize' para atualizações no PR
+
+jobs:
+  generate_and_update_pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       # Para ler o repositório (obter diffs)
+      pull-requests: write # Para ler e atualizar o corpo do PR
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Necessário para obter o histórico completo para diffs
+
+      - name: Get PR changes
+        id: get_pr_diff
+        run: |
+          # Obter o diff entre o branch base do PR e o branch head do PR
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+
+          echo "Base SHA: $BASE_SHA"
+          echo "Head SHA: $HEAD_SHA"
+
+          # Obter o diff
+          DIFF_OUTPUT=$(git diff $BASE_SHA $HEAD_SHA)
+
+          # Escapar caracteres especiais para JSON e limitar o tamanho (MUITO IMPORTANTE)
+          # Ajuste MAX_DIFF_LENGTH conforme necessário para equilibrar detalhe e uso de tokens
+          MAX_DIFF_LENGTH=12000 # Reduzido um pouco para ser mais conservador com tokens gratuitos
+          TRUNCATED_DIFF=$(echo "$DIFF_OUTPUT" | head -c $MAX_DIFF_LENGTH)
+          
+          # Melhorar o escaping para JSON (usando Python ou Node.js seria mais robusto para casos complexos)
+          # Esta é uma simplificação funcional para muitos casos:
+          JSON_SAFE_DIFF=$(echo "$TRUNCATED_DIFF" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+          echo "diff_output_json_safe<<EOF" >> $GITHUB_OUTPUT
+          echo "$JSON_SAFE_DIFF" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Call Gemini API
+        id: call_gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COMMIT_DIFF: ${{ steps.get_pr_diff.outputs.diff_output_json_safe }}
+        run: |
+          PROMPT="Gere um breve descritivo em português para as seguintes alterações de código (diff) de um Pull Request.
+          Este descritivo será inserido na seção '## Descrição' de um template de Pull Request.
+          Foque nos principais impactos e funcionalidades adicionadas ou corrigidas.
+          Seja conciso e use bullet points se apropriado. Não inclua saudações ou frases introdutórias desnecessárias, apenas os itens do changelog.
+          Diff:
+          $COMMIT_DIFF"
+
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "contents": [{
+              "parts": [{
+                "text": "$PROMPT"
+              }]
+            }],
+            "generationConfig": {
+              "temperature": 0.7,
+              "maxOutputTokens": 250 # Reduzido um pouco para economizar tokens de output
+            }
+          }
+          EOF
+          )
+
+          # Usando o modelo Gemini 1.5 Flash - geralmente mais eficiente e com bom nível gratuito
+          # Verifique a documentação do Google AI para o nome exato do modelo 'latest' ou uma versão específica que sua chave suporta.
+          API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$GEMINI_API_KEY"
+          # Se preferir ou se o flash não estiver disponível com sua chave, pode usar o gemini-pro:
+          # API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$GEMINI_API_KEY"
+          
+          RESPONSE=$(curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD")
+
+          echo "Gemini API Response: $RESPONSE"
+          
+          # Parseando a resposta com jq e tratando possíveis erros de parsing ou ausência de texto
+          GENERATED_TEXT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // ""')
+
+          if [ -z "$GENERATED_TEXT" ]; then
+            # Se o texto gerado estiver vazio, tenta extrair mensagem de erro da API, se houver
+            ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.error.message // "Erro desconhecido ao gerar changelog ou texto vazio retornado."')
+            echo "::warning file=$0,line=$LINENO::Falha ao gerar texto com Gemini. Resposta: $RESPONSE. Mensagem de erro: $ERROR_MESSAGE"
+            GENERATED_TEXT="Falha ao gerar resumo das alterações pela IA." # Mensagem de fallback
+          fi
+          
+          # Remover possíveis novas linhas extras no início/fim do texto gerado
+          TRIMMED_GENERATED_TEXT=$(echo "$GENERATED_TEXT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+          echo "generated_text<<EOF" >> $GITHUB_OUTPUT
+          echo "$TRIMMED_GENERATED_TEXT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Update PR Body
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const generatedChangelog = `${{ steps.call_gemini.outputs.generated_text }}`.trim();
+            const fallbackErrorMessage = "Falha ao gerar resumo das alterações pela IA.";
+
+            if (!generatedChangelog || generatedChangelog === fallbackErrorMessage) {
+              console.log("Nenhum changelog significativo gerado ou ocorreu um erro. Não atualizando o PR ou usando mensagem de fallback.");
+              // Você pode decidir se quer ou não adicionar a fallbackErrorMessage ao PR.
+              // Neste exemplo, não adicionaremos nada se a IA falhar de forma clara.
+              // Se quiser adicionar a mensagem de erro, descomente a linha abaixo e ajuste a lógica.
+              // const fullGeneratedContent = "\n\n**Resumo das Alterações (Gerado por IA):**\n" + fallbackErrorMessage;
+              // (Continue com a lógica para adicionar 'fullGeneratedContent' se desejar)
+              return; 
+            }
+
+            const prNumber = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            let currentBody = pr.body || ""; // Corpo atual do PR
+            const descriptionMarker = "## Descrição"; // Certifique-se que este marcador existe no seu template de PR
+            const generatedChangelogHeader = "\n\n**Resumo das Alterações (Gerado por IA):**\n";
+            const fullGeneratedContent = generatedChangelogHeader + generatedChangelog;
+
+            // Marcador para identificar conteúdo gerado anteriormente e evitar duplicação
+            const aiContentMarkerStart = "<!-- AI_GENERATED_CHANGELOG_START -->";
+            const aiContentMarkerEnd = "<!-- AI_GENERATED_CHANGELOG_END -->";
+            
+            let newBody;
+
+            // Verifica se já existe conteúdo gerado por IA para substituí-lo
+            const startIndex = currentBody.indexOf(aiContentMarkerStart);
+            const endIndex = currentBody.indexOf(aiContentMarkerEnd);
+
+            if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
+              // Substitui o conteúdo antigo gerado por IA
+              newBody = currentBody.substring(0, startIndex) + 
+                        aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd + 
+                        currentBody.substring(endIndex + aiContentMarkerEnd.length);
+              console.log("Substituindo changelog gerado por IA existente.");
+            } else {
+              // Insere o novo changelog abaixo de "## Descrição"
+              const descriptionIndex = currentBody.indexOf(descriptionMarker);
+              if (descriptionIndex !== -1) {
+                const insertPosition = descriptionIndex + descriptionMarker.length;
+                newBody = currentBody.substring(0, insertPosition) +
+                          "\n" + aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd +
+                          currentBody.substring(insertPosition);
+                console.log("Inserindo novo changelog gerado por IA abaixo de '## Descrição'.");
+              } else {
+                // Se "## Descrição" não for encontrado, adiciona no início do corpo do PR.
+                // Isso garante que o changelog seja adicionado mesmo se o template estiver ligeiramente diferente.
+                console.warn(`Marcador '${descriptionMarker}' não encontrado no corpo do PR. Adicionando changelog no início.`);
+                newBody = aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd + "\n\n" + currentBody;
+              }
+            }
+
+            if (newBody !== currentBody) {
+              try {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  body: newBody,
+                });
+                console.log("Corpo do PR atualizado com sucesso.");
+              } catch (error) {
+                console.error("Erro ao atualizar o corpo do PR:", error);
+                core.setFailed(`Erro ao atualizar o corpo do PR: ${error.message}`);
+              }
+            } else {
+              console.log("Nenhuma alteração necessária no corpo do PR (changelog gerado pode ser o mesmo ou não houve mudança significativa).");
+            }
