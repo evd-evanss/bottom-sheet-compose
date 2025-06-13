@@ -91,12 +91,12 @@ jobs:
 
       - name: Update PR Body
         uses: actions/github-script@v7
-        env: # Passando a saída do passo anterior como variável de ambiente
+        env:
           GENERATED_CHANGELOG_FROM_API: ${{ steps.call_gemini.outputs.generated_text }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const core = require('@actions/core'); // Importar core para setFailed
+            // 'core' já está disponível globalmente aqui, não precisa do require.
             const generatedChangelogRaw = process.env.GENERATED_CHANGELOG_FROM_API || "";
             const generatedChangelog = generatedChangelogRaw.trim();
             const fallbackErrorMessage = "Falha ao gerar resumo das alterações pela IA.";
