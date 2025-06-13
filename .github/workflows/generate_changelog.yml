@@ -9,13 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write # Necessário para adicionar comentários de revisão e atualizar o corpo do PR
+      pull-requests: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Necessário para git diff
+          fetch-depth: 0
 
       - name: Get PR Diff Text for AI
         id: get_pr_diff_text
@@ -26,15 +26,11 @@ jobs:
           echo "Base SHA: $BASE_SHA"
           echo "Head SHA: $HEAD_SHA"
 
-          # Obter o diff completo para a IA
           DIFF_OUTPUT=$(git diff --unified=3 $BASE_SHA $HEAD_SHA)
-
-          # Escapar para JSON - Este escaping é para o $COMMIT_DIFF_TEXT ser usado DENTRO do $THE_ACTUAL_PROMPT
-          # que por sua vez será escapado por jq.
           JSON_SAFE_DIFF_FOR_PROMPT_EMBEDDING=$(echo "$DIFF_OUTPUT" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
           echo "diff_for_ai<<EOF" >> $GITHUB_OUTPUT
-          echo "$JSON_SAFE_DIFF_FOR_PROMPT_EMBEDDING" >> $GITHUB_OUTPUT # Este será o $COMMIT_DIFF_TEXT
+          echo "$JSON_SAFE_DIFF_FOR_PROMPT_EMBEDDING" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
         shell: bash
 
@@ -42,10 +38,8 @@ jobs:
         id: call_gemini
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # COMMIT_DIFF_TEXT é o output do passo anterior, já escapado para ser embutido numa string de prompt
           COMMIT_DIFF_TEXT: ${{ steps.get_pr_diff_text.outputs.diff_for_ai }}
         run: |
-          # Prompt para gerar sugestões de revisão em JSON e um resumo para o corpo do PR
           THE_ACTUAL_PROMPT="Você é um assistente de revisão de código e gerador de changelog.
           Analise o seguinte diff de um Pull Request.
 
@@ -61,7 +55,6 @@ jobs:
                 \"line_number_hint\": \"Número da linha aproximado no arquivo APÓS a mudança, ou um trecho de código alterado para ajudar a localizar. Ex: 15 ou 'if (condicao) {'\",
                 \"suggestion_text\": \"Sua sugestão de melhoria aqui.\"
               }
-              // ... mais sugestões
             ],
             \"pull_request_summary\": \"**Resumo das Alterações (Gerado por IA):**\n- Mudança A...\n- Correção B...\"
           }
@@ -76,9 +69,8 @@ jobs:
           - Use bullet points se apropriado. Foque no 'o quê' e 'porquê' da mudança para um changelog.
 
           Diff:
-          ${COMMIT_DIFF_TEXT}" # Expande o diff (que já foi escapado no passo anterior para ser parte desta string)
+          ${COMMIT_DIFF_TEXT}"
 
-          # Usar jq para construir o payload JSON de forma segura, escapando o THE_ACTUAL_PROMPT
           JSON_PAYLOAD=$(jq -n \
             --arg prompt_text "$THE_ACTUAL_PROMPT" \
             '{
@@ -89,12 +81,12 @@ jobs:
               }],
               "generationConfig": {
                 "temperature": 0.5,
-                "maxOutputTokens": 2000, # Aumentado um pouco para acomodar diffs maiores no prompt
-                "responseMimeType": "application/json"
+                "maxOutputTokens": 2000,
+                "responseMimeType": "application/json" 
               }
             }')
 
-          echo "DEBUG: JSON Payload sendo enviado para a API (primeiros 500 caracteres):"
+          echo "DEBUG: JSON Payload (primeiros 500):"
           echo "$JSON_PAYLOAD" | head -c 500
           echo "--- FIM DEBUG JSON PAYLOAD ---"
 
@@ -110,239 +102,232 @@ jobs:
           rm "$RESPONSE_BODY_FILE"
 
           echo "Gemini API HTTP Status: $HTTP_STATUS"
-          echo "Gemini API Raw Response (primeiros 1000 caracteres):"
+          echo "Gemini API Raw Response (primeiros 1000):"
           echo "$RAW_RESPONSE_TEXT" | head -c 1000
           echo "--- FIM DEBUG RAW RESPONSE ---"
 
-          if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "::error::Falha na chamada da API Gemini. Status: $HTTP_STATUS. Resposta Completa: $RAW_RESPONSE_TEXT" # Mostra resposta completa em caso de erro
-            GENERATED_JSON_OUTPUT='{"review_suggestions":[], "pull_request_summary":"**Resumo das Alterações (Gerado por IA):**\nFalha ao comunicar com a IA. Status: '$HTTP_STATUS'"}'
+          GENERATED_JSON_OUTPUT='{"review_suggestions":[], "pull_request_summary":"**Resumo das Alterações (Gerado por IA):**\nResposta padrão em caso de falha."}' 
+
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            PARSED_AI_JSON=$(echo "$RAW_RESPONSE_TEXT" | jq -r '.candidates[0].content.parts[0].text | fromjson' 2>/dev/null)
+
+            if [ -n "$PARSED_AI_JSON" ] && echo "$PARSED_AI_JSON" | jq -e '.review_suggestions and .pull_request_summary' > /dev/null; then
+              GENERATED_JSON_OUTPUT="$PARSED_AI_JSON"
+              echo "JSON da IA extraído e validado com sucesso."
+            else
+              echo "::error::Não foi possível extrair ou validar o JSON interno da resposta da IA. Resposta crua (primeiros 1000): $(echo "$RAW_RESPONSE_TEXT" | head -c 1000). Tentativa de extração (primeiros 500): $(echo "$PARSED_AI_JSON" | head -c 500)"
+              GENERATED_JSON_OUTPUT='{"review_suggestions":[], "pull_request_summary":"**Resumo das Alterações (Gerado por IA):**\nResposta da IA em formato inesperado após extração."}'
+            fi
           else
-            # Tenta limpar o JSON se ele vier com
-          CLEANED_JSON=$(echo "$RAW_RESPONSE_TEXT" | sed -n '/^{/,/}$/p' | sed 's/
-          //g' | tr -d '\n' | jq -c '.' 2>/dev/null)
+            echo "::error::Falha na chamada da API Gemini. Status: $HTTP_STATUS. Resposta (primeiros 1000): $(echo "$RAW_RESPONSE_TEXT" | head -c 1000)"
+            GENERATED_JSON_OUTPUT='{"review_suggestions":[], "pull_request_summary":"**Resumo das Alterações (Gerado por IA):**\nFalha ao comunicar com a IA. Status: '$HTTP_STATUS'"}'
+          fi
+          
+          echo "GENERATED_JSON_OUTPUT (primeiros 500):"
+          echo "$GENERATED_JSON_OUTPUT" | head -c 500
+          echo "--- FIM GENERATED_JSON_OUTPUT ---"
 
-                      if [ -z "$CLEANED_JSON" ]; then # Se jq falhou ou sed não encontrou JSON
-                          echo "::warning::Não foi possível limpar/parsear a resposta da API como JSON diretamente. Usando resposta crua."
-                          CLEANED_JSON=$(echo "$RAW_RESPONSE_TEXT" | jq -c '.' 2>/dev/null || echo "$RAW_RESPONSE_TEXT") # Tenta parsear a crua como último recurso
-                      fi
+          echo "generated_json_output<<EOF" >> $GITHUB_OUTPUT
+          echo "$GENERATED_JSON_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
 
-                      if ! echo "$CLEANED_JSON" | jq -e '.review_suggestions and .pull_request_summary' > /dev/null; then
-                          echo "::error::Resposta da IA não contém as chaves JSON esperadas ('review_suggestions', 'pull_request_summary'). Resposta (tentativa de limpeza): $CLEANED_JSON. Resposta Crua: $RAW_RESPONSE_TEXT"
-                          GENERATED_JSON_OUTPUT='{"review_suggestions":[], "pull_request_summary":"**Resumo das Alterações (Gerado por IA):**\nResposta da IA em formato inesperado."}'
-                      else
-                          GENERATED_JSON_OUTPUT="$CLEANED_JSON"
-                      fi
-                    fi
+      - name: Process AI Output and Post Review
+        uses: actions/github-script@v7
+        env:
+          AI_OUTPUT_JSON: ${{ steps.call_gemini.outputs.generated_json_output }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const headSha = context.payload.pull_request.head.sha;
+            
+            const aiOutputRaw = process.env.AI_OUTPUT_JSON;
+            let aiOutput;
+            try {
+              aiOutput = JSON.parse(aiOutputRaw);
+            } catch (e) {
+              console.error("Erro ao parsear a saída da IA como JSON:", e);
+              console.log("Saída crua da IA (string que falhou no parse):", aiOutputRaw);
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: `Falha ao processar resposta da IA (erro de parsing JSON). Por favor, verifique os logs da Action. Erro: ${e.message}. Resposta Recebida (string): ${aiOutputRaw.substring(0, 500)}...`
+              });
+              return;
+            }
 
-                    echo "generated_json_output<<EOF" >> $GITHUB_OUTPUT
-                    echo "$GENERATED_JSON_OUTPUT" >> $GITHUB_OUTPUT
-                    echo "EOF" >> $GITHUB_OUTPUT
-                  shell: bash
+            const reviewSuggestions = aiOutput.review_suggestions || [];
+            const prSummaryText = aiOutput.pull_request_summary || "**Resumo das Alterações (Gerado por IA):**\nNão foi possível gerar o resumo.";
 
-                - name: Process AI Output and Post Review
-                  uses: actions/github-script@v7
-                  env:
-                    AI_OUTPUT_JSON: ${{ steps.call_gemini.outputs.generated_json_output }}
-                  with:
-                    github-token: ${{ secrets.GITHUB_TOKEN }}
-                    script: |
-                      const prNumber = context.issue.number;
-                      const owner = context.repo.owner;
-                      const repo = context.repo.repo;
-                      const headSha = context.payload.pull_request.head.sha;
+            // 1. ATUALIZAR O CORPO DO PULL REQUEST COM O RESUMO
+            try {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+              let currentBody = pr.body || "";
+              const descriptionMarker = "## Descrição"; 
+              const aiSummaryWrapperStart = "\n\n<!-- AI_GENERATED_SUMMARY_START -->";
+              const aiSummaryWrapperEnd = "<!-- AI_GENERATED_SUMMARY_END -->";
+              const summaryToInsert = aiSummaryWrapperStart + "\n" + prSummaryText + "\n" + aiSummaryWrapperEnd;
+            
+              let newBody;
+              const existingSummaryStart = currentBody.indexOf(aiSummaryWrapperStart);
+              const existingSummaryEnd = currentBody.indexOf(aiSummaryWrapperEnd);
 
-                      const aiOutputRaw = process.env.AI_OUTPUT_JSON;
-                      let aiOutput;
-                      try {
-                        aiOutput = JSON.parse(aiOutputRaw);
-                      } catch (e) {
-                        console.error("Erro ao parsear a saída da IA como JSON:", e);
-                        console.log("Saída crua da IA:", aiOutputRaw);
-                        await github.rest.issues.createComment({
-                          owner, repo, issue_number: prNumber,
-                          body: `Falha ao processar resposta da IA (erro de parsing JSON). Por favor, verifique os logs da Action. Erro: ${e.message}. Resposta Recebida: ${aiOutputRaw}`
-                        });
-                        return;
-                      }
+              if (existingSummaryStart !== -1 && existingSummaryEnd !== -1 && existingSummaryStart < existingSummaryEnd) {
+                newBody = currentBody.substring(0, existingSummaryStart) + summaryToInsert + currentBody.substring(existingSummaryEnd + aiSummaryWrapperEnd.length);
+              } else {
+                const descIndex = currentBody.indexOf(descriptionMarker);
+                if (descIndex !== -1) {
+                  const insertPos = descIndex + descriptionMarker.length;
+                  newBody = currentBody.substring(0, insertPos) + summaryToInsert + currentBody.substring(insertPos);
+                } else {
+                  console.warn(`Marcador '${descriptionMarker}' não encontrado no corpo do PR. Adicionando resumo da IA no início.`);
+                  newBody = summaryToInsert + "\n\n" + currentBody;
+                }
+              }
+              if (newBody !== currentBody) {
+                await github.rest.pulls.update({ owner, repo, pull_number: prNumber, body: newBody });
+                console.log("Corpo do PR atualizado com o resumo da IA.");
+              } else {
+                console.log("Nenhuma alteração necessária no resumo do corpo do PR.");
+              }
+            } catch (error) {
+              console.error("Erro ao atualizar o corpo do PR com o resumo:", error);
+            }
 
-                      const reviewSuggestions = aiOutput.review_suggestions || [];
-                      const prSummaryText = aiOutput.pull_request_summary || "**Resumo das Alterações (Gerado por IA):**\nNão foi possível gerar o resumo.";
+            // 2. POSTAR COMENTÁRIOS DE REVISÃO
+            if (!Array.isArray(reviewSuggestions)) {
+                console.warn(`'review_suggestions' não é um array. Valor: ${JSON.stringify(reviewSuggestions)}. Pulando postagem de comentários de revisão.`);
+                if (reviewSuggestions && typeof reviewSuggestions === 'string') { 
+                     await github.rest.issues.createComment({
+                        owner, repo, issue_number: prNumber,
+                        body: `A IA não forneceu sugestões de revisão no formato de array esperado. Conteúdo recebido para sugestões: ${reviewSuggestions}`
+                    });
+                }
+                return; 
+            }
 
-                      // 1. ATUALIZAR O CORPO DO PULL REQUEST COM O RESUMO
-                      try {
-                        const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-                        let currentBody = pr.body || "";
-                        const descriptionMarker = "## Descrição"; // Seu marcador principal no template de PR
-                        const aiSummaryWrapperStart = "\n\n<!-- AI_GENERATED_SUMMARY_START -->";
-                        const aiSummaryWrapperEnd = "<!-- AI_GENERATED_SUMMARY_END -->";
-                        const summaryToInsert = aiSummaryWrapperStart + "\n" + prSummaryText + "\n" + aiSummaryWrapperEnd;
+            if (reviewSuggestions.length === 0) {
+              console.log("Nenhuma sugestão de revisão de código da IA.");
+              return;
+            }
 
-                        let newBody;
-                        const existingSummaryStart = currentBody.indexOf(aiSummaryWrapperStart);
-                        const existingSummaryEnd = currentBody.indexOf(aiSummaryWrapperEnd);
+            let diffContent;
+            try {
+              const diffResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner, repo, pull_number: prNumber,
+                headers: {
+                  accept: 'application/vnd.github.v3.diff'
+                }
+              });
+              diffContent = diffResponse.data;
+            } catch (error) {
+              console.error("Erro ao obter o diff do PR:", error);
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: `Erro ao obter o diff do PR para mapear comentários da IA: ${error.message}` });
+              return;
+            }
 
-                        if (existingSummaryStart !== -1 && existingSummaryEnd !== -1 && existingSummaryStart < existingSummaryEnd) {
-                          newBody = currentBody.substring(0, existingSummaryStart) + summaryToInsert + currentBody.substring(existingSummaryEnd + aiSummaryWrapperEnd.length);
-                        } else {
-                          const descIndex = currentBody.indexOf(descriptionMarker);
-                          if (descIndex !== -1) {
-                            const insertPos = descIndex + descriptionMarker.length;
-                            newBody = currentBody.substring(0, insertPos) + summaryToInsert + currentBody.substring(insertPos);
-                          } else {
-                            console.warn(`Marcador '${descriptionMarker}' não encontrado no corpo do PR. Adicionando resumo da IA no início.`);
-                            newBody = summaryToInsert + "\n\n" + currentBody;
-                          }
-                        }
-                        if (newBody !== currentBody) {
-                          await github.rest.pulls.update({ owner, repo, pull_number: prNumber, body: newBody });
-                          console.log("Corpo do PR atualizado com o resumo da IA.");
-                        } else {
-                          console.log("Nenhuma alteração necessária no resumo do corpo do PR.");
-                        }
-                      } catch (error) {
-                        console.error("Erro ao atualizar o corpo do PR com o resumo:", error);
-                      }
+            const reviewComments = [];
+            let unmappedSuggestionsLog = "";
 
-                      // 2. POSTAR COMENTÁRIOS DE REVISÃO
-                      if (!Array.isArray(reviewSuggestions)) {
-                          console.warn(`'review_suggestions' não é um array. Valor: ${JSON.stringify(reviewSuggestions)}. Pulando postagem de comentários de revisão.`);
-                          if (reviewSuggestions && typeof reviewSuggestions === 'string') { // Se for uma string, talvez a IA não formatou como array
-                               await github.rest.issues.createComment({
-                                  owner, repo, issue_number: prNumber,
-                                  body: `A IA não forneceu sugestões de revisão no formato de array esperado. Conteúdo recebido para sugestões: ${reviewSuggestions}`
-                              });
-                          }
-                          return; // Não prosseguir se não for um array
-                      }
+            for (const item of reviewSuggestions) {
+              if (!item || !item.file_path || !item.suggestion_text) {
+                console.warn("Item de sugestão da IA malformado ou incompleto, pulando:", item);
+                unmappedSuggestionsLog += `\n- Item malformado: ${JSON.stringify(item)}`;
+                continue;
+              }
 
+              let positionInDiff;
+              const fileDiffSections = diffContent.split('\ndiff --git ');
+              const targetFileDiffSection = fileDiffSections.find(section => section.includes(`b/${item.file_path.replace(/^\.\//, '')}`)); 
 
-                      if (reviewSuggestions.length === 0) {
-                        console.log("Nenhuma sugestão de revisão de código da IA.");
-                        return;
-                      }
+              if (targetFileDiffSection) {
+                const lines = targetFileDiffSection.split('\n');
+                let diffLineCounter = 0; 
+                let fileLineCounter = 0; 
+                let hunkFound = false;
+            
+                for (let i = 0; i < lines.length; i++) {
+                  const lineContent = lines[i];
+                  if (lineContent.startsWith('@@ ')) {
+                    hunkFound = true;
+                    const match = lineContent.match(/\+([0-9]+)/);
+                    if (match && match[1]) {
+                      fileLineCounter = parseInt(match[1]) -1; 
+                    }
+                    diffLineCounter = 0; 
+                    continue;
+                  }
 
-                      let diffContent;
-                      try {
-                        const diffResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                          owner, repo, pull_number: prNumber,
-                          headers: {
-                            accept: 'application/vnd.github.v3.diff'
-                          }
-                        });
-                        diffContent = diffResponse.data;
-                      } catch (error) {
-                        console.error("Erro ao obter o diff do PR:", error);
-                        await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: `Erro ao obter o diff do PR para mapear comentários da IA: ${error.message}` });
-                        return;
-                      }
+                  if (!hunkFound) continue;
 
-                      const reviewComments = [];
-                      let unmappedSuggestionsLog = "";
+                  if (lineContent.startsWith('+') || lineContent.startsWith(' ')) {
+                    fileLineCounter++;
+                  }
+            
+                  if (lineContent.startsWith('+') || lineContent.startsWith('-') || lineContent.startsWith(' ')) {
+                     diffLineCounter++; 
+                  } else {
+                      continue; 
+                  }
+            
+                  let matchFound = false;
+                  if (item.line_number_hint) {
+                    const hintAsNumber = parseInt(item.line_number_hint);
+                    if (!isNaN(hintAsNumber) && hintAsNumber === fileLineCounter && (lineContent.startsWith('+') || lineContent.startsWith(' '))) {
+                       matchFound = true;
+                    } else if (typeof item.line_number_hint === 'string' && lineContent.includes(item.line_number_hint) && (lineContent.startsWith('+') || lineContent.startsWith(' ')) ) {
+                       matchFound = true;
+                    }
+                  }
+            
+                  if (matchFound) { 
+                    positionInDiff = diffLineCounter;
+                    console.log(`Mapeado: ${item.file_path} (linha aprox. ${fileLineCounter} no arquivo, hint: '${item.line_number_hint}') para posição ${positionInDiff} no diff hunk.`);
+                    break; 
+                  }
+                }
+              }
 
-                      for (const item of reviewSuggestions) {
-                        if (!item || !item.file_path || !item.suggestion_text) {
-                          console.warn("Item de sugestão da IA malformado ou incompleto, pulando:", item);
-                          unmappedSuggestionsLog += `\n- Item malformado: ${JSON.stringify(item)}`;
-                          continue;
-                        }
+              if (positionInDiff !== undefined) {
+                 reviewComments.push({
+                   path: item.file_path.replace(/^\.\//, ''), 
+                   position: positionInDiff,
+                   body: item.suggestion_text,
+                 });
+              } else {
+                 console.warn(`Não foi possível mapear a sugestão para uma linha no diff para o arquivo ${item.file_path} com hint "${item.line_number_hint}".`);
+                 unmappedSuggestionsLog += `\n- Não mapeado: ${item.file_path} (Hint: ${item.line_number_hint || 'N/A'}) - Sugestão: ${item.suggestion_text}`;
+              }
+            }
 
-                        let positionInDiff;
-                        const fileDiffSections = diffContent.split('\ndiff --git ');
-                        const targetFileDiffSection = fileDiffSections.find(section => section.includes(`b/${item.file_path.replace(/^\.\//, '')}`)); // Remove ./ inicial se houver
-
-                        if (targetFileDiffSection) {
-                          const lines = targetFileDiffSection.split('\n');
-                          let diffLineCounter = 0;
-                          let fileLineCounter = 0; 
-                          let hunkFound = false;
-
-                          for (let i = 0; i < lines.length; i++) {
-                            const lineContent = lines[i];
-                            if (lineContent.startsWith('@@ ')) {
-                              hunkFound = true;
-                              const match = lineContent.match(/\+([0-9]+)/);
-                              if (match && match[1]) {
-                                fileLineCounter = parseInt(match[1]) -1;
-                              }
-                              diffLineCounter = 0;
-                              continue;
-                            }
-
-                            if (!hunkFound) continue;
-
-                            // Atualiza o contador de linha do arquivo para linhas de contexto e adicionadas
-                            if (lineContent.startsWith('+') || lineContent.startsWith(' ')) {
-                              fileLineCounter++;
-                            }
-                            // Atualiza o contador de posição no diff hunk para todas as linhas dentro do hunk
-                            if (lineContent.startsWith('+') || lineContent.startsWith('-') || lineContent.startsWith(' ')) {
-                               // A API de comentários de revisão do GitHub considera a posição relativa às linhas mostradas no diff hunk.
-                               // Todas as linhas (contexto, removidas, adicionadas) dentro de um hunk contribuem para a contagem de `position`.
-                               // A primeira linha de um hunk é `position: 1`.
-                               diffLineCounter++;
-                            } else {
-                                continue; // Ignora linhas que não são parte do corpo do hunk (ex: \ No newline at end of file)
-                            }
-
-                            let matchFound = false;
-                            if (item.line_number_hint) {
-                              const hintAsNumber = parseInt(item.line_number_hint);
-                              // Compara com fileLineCounter para linhas adicionadas ou de contexto
-                              if (!isNaN(hintAsNumber) && hintAsNumber === fileLineCounter && (lineContent.startsWith('+') || lineContent.startsWith(' '))) {
-                                 matchFound = true;
-                              } else if (typeof item.line_number_hint === 'string' && lineContent.includes(item.line_number_hint) && (lineContent.startsWith('+') || lineContent.startsWith(' ')) ) {
-                                 matchFound = true;
-                              }
-                            }
-
-                            // Comenta apenas em linhas adicionadas ou de contexto (a API permite comentar em linhas de contexto)
-                            if (matchFound && (lineContent.startsWith('+') || lineContent.startsWith(' '))) {
-                              positionInDiff = diffLineCounter;
-                              console.log(`Mapeado: ${item.file_path} (linha aprox. ${fileLineCounter} no arquivo, hint: '${item.line_number_hint}') para posição ${positionInDiff} no diff hunk.`);
-                              break; 
-                            }
-                          }
-                        }
-
-                        if (positionInDiff !== undefined) {
-                           reviewComments.push({
-                             path: item.file_path.replace(/^\.\//, ''), // Remove ./ inicial se houver
-                             position: positionInDiff,
-                             body: item.suggestion_text,
-                           });
-                        } else {
-                           console.warn(`Não foi possível mapear a sugestão para uma linha no diff para o arquivo ${item.file_path} com hint "${item.line_number_hint}".`);
-                           unmappedSuggestionsLog += `\n- Não mapeado: ${item.file_path} (Hint: ${item.line_number_hint || 'N/A'}) - Sugestão: ${item.suggestion_text}`;
-                        }
-                      }
-
-                      if (reviewComments.length > 0) {
-                        try {
-                          await github.rest.pulls.createReview({
-                            owner,
-                            repo,
-                            pull_number: prNumber,
-                            commit_id: headSha,
-                            event: 'COMMENT',
-                            body: "Sugestões de revisão de código geradas por IA." + (unmappedSuggestionsLog ? "\n\nAlgumas sugestões não puderam ser mapeadas para linhas específicas (ver logs da Action)." : ""),
-                            comments: reviewComments,
-                          });
-                          console.log(`Revisão com ${reviewComments.length} comentários postada com sucesso.`);
-                        } catch (error) {
-                          console.error("Erro ao postar comentários de revisão no PR:", error.message, error.stack);
-                          let fallbackBody = `Erro ao postar os comentários de revisão da IA no PR. Detalhes: ${error.message}\nSugestões que seriam postadas:`;
-                          reviewComments.forEach(c => {
-                              fallbackBody += `\n- Arquivo: ${c.path}, Posição: ${c.position}\n  Sugestão: ${c.body}\n`;
-                          });
-                          if (unmappedSuggestionsLog) fallbackBody += "\n\nSugestões não mapeadas:" + unmappedSuggestionsLog;
-                          await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: fallbackBody });
-                        }
-                      } else {
-                        console.log("Nenhum comentário de revisão válido foi construído para postar.");
-                        if (unmappedSuggestionsLog) { // Se houve sugestões mas nenhuma foi mapeada
-                            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: "A IA gerou sugestões, mas nenhuma pôde ser mapeada para linhas específicas no diff. Veja os logs da Action para detalhes. Sugestões não mapeadas:" + unmappedSuggestionsLog });
-                        } else if (reviewSuggestions.length > 0) { // Se reviewSuggestions tinha itens, mas reviewComments ficou vazio (ex: todos itens malformados)
-                            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: "A IA gerou sugestões, mas elas não puderam ser processadas para comentários de revisão. Verifique os logs da Action." });
-                        }
-                      }
+            if (reviewComments.length > 0) {
+              try {
+                await github.rest.pulls.createReview({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                  commit_id: headSha,
+                  event: 'COMMENT',
+                  body: "Sugestões de revisão de código geradas por IA." + (unmappedSuggestionsLog ? "\n\nAlgumas sugestões não puderam ser mapeadas para linhas específicas (ver logs da Action para detalhes)." : ""),
+                  comments: reviewComments,
+                });
+                console.log(`Revisão com ${reviewComments.length} comentários postada com sucesso.`);
+              } catch (error) {
+                console.error("Erro ao postar comentários de revisão no PR:", error.message, error.stack);
+                let fallbackBody = `Erro ao postar os comentários de revisão da IA no PR. Detalhes: ${error.message}\n\nSugestões que seriam postadas:`;
+                reviewComments.forEach(c => {
+                    fallbackBody += `\n- Arquivo: ${c.path}, Posição: ${c.position}\n  Sugestão: ${c.body}\n`;
+                });
+                if (unmappedSuggestionsLog) fallbackBody += "\n\nSugestões não mapeadas originalmente:" + unmappedSuggestionsLog;
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: fallbackBody });
+              }
+            } else {
+              console.log("Nenhum comentário de revisão válido foi construído para postar.");
+              if (unmappedSuggestionsLog) { 
+                  await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: "A IA gerou sugestões, mas nenhuma pôde ser mapeada para linhas específicas no diff. Veja os logs da Action para detalhes. Sugestões não mapeadas:" + unmappedSuggestionsLog });
+              } else if (reviewSuggestions.length > 0) { 
+                  await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: "A IA gerou sugestões, mas elas não puderam ser processadas para comentários de revisão (possivelmente devido a formato incorreto ou falha no mapeamento). Verifique os logs da Action." });
+              }
+            }
