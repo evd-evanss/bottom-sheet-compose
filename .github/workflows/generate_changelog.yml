@@ -72,11 +72,12 @@ jobs:
           - Se nenhum problema for encontrado, \"review_suggestions\" deve ser um array vazio [].
           - Prefixar sugestões de erros de sintaxe com \"[ERRO DE SINTAXE]\".
           - Prefixar sugestões específicas de Compose com \"[COMPOSE]\".
-
+          
           Para \"pull_request_summary\":
           - Gere um breve descritivo das principais funcionalidades adicionadas, corrigidas ou impactos.
           - Use bullet points se apropriado. Foque no 'o quê' e 'porquê' da mudança para um changelog.
-
+          - Ao invés de sobreescrever o descritivo a cada commit, adicione novas linhas de descritivos a cada novo commit adicionado no Pull Request
+    
           Diff:
           ${COMMIT_DIFF_TEXT}"
 
