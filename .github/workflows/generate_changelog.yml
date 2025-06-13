@@ -28,10 +28,19 @@ jobs:
 
           DIFF_OUTPUT=$(git diff $BASE_SHA $HEAD_SHA)
 
-          MAX_DIFF_LENGTH=12000
+          # Aumentado para permitir diffs maiores - MONITORE O USO DE TOKENS!
+          MAX_DIFF_LENGTH=30000 
           TRUNCATED_DIFF=$(echo "$DIFF_OUTPUT" | head -c $MAX_DIFF_LENGTH)
           
+          echo "DEBUG: TRUNCATED_DIFF (primeiros 500 caracteres):"
+          echo "$TRUNCATED_DIFF" | head -c 500
+          echo "--- FIM DEBUG TRUNCATED_DIFF ---"
+          
           JSON_SAFE_DIFF=$(echo "$TRUNCATED_DIFF" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+          # echo "DEBUG: JSON_SAFE_DIFF é:" # Descomente para debug completo do diff escapado
+          # echo "$JSON_SAFE_DIFF"
+          # echo "DEBUG: FIM DO JSON_SAFE_DIFF"
 
           echo "diff_output_json_safe<<EOF" >> $GITHUB_OUTPUT
           echo "$JSON_SAFE_DIFF" >> $GITHUB_OUTPUT
@@ -44,10 +53,24 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COMMIT_DIFF: ${{ steps.get_pr_diff.outputs.diff_output_json_safe }}
         run: |
-          PROMPT="Gere um breve descritivo em português para as seguintes alterações de código (diff) de um Pull Request.
-          Este descritivo será inserido na seção '## Descrição' de um template de Pull Request.
-          Foque nos principais impactos e funcionalidades adicionadas ou corrigidas.
-          Seja conciso e use bullet points se apropriado. Não inclua saudações ou frases introdutórias desnecessárias, apenas os itens do changelog.
+          # Prompt aprimorado para revisão de código e changelog
+          PROMPT="Você é um assistente de revisão de código e gerador de changelog.
+          Analise o seguinte diff de um Pull Request e forneça um feedback construtivo em português.
+
+          Seu output DEVE CONTER DUAS SEÇÕES CLARAS, exatamente como descrito abaixo:
+
+          **Resumo das Alterações (para o changelog):**
+          [Gere aqui um breve descritivo das principais funcionalidades adicionadas, corrigidas ou impactos, usando bullet points se apropriado. Foque no 'o quê' e 'porquê' da mudança para um changelog.]
+
+          **Sugestões de Revisão de Código:**
+          [Identifique e aponte aqui, usando bullet points:
+          - Possíveis bugs, erros de lógica ou erros de digitação (como brackets faltando ou sobrando).
+          - Comentários desnecessários, código morto ou código redundante.
+          - Oportunidades para melhorar a legibilidade, performance ou manutenibilidade do código.
+          - Violações de boas práticas comuns de programação (se aplicável ao contexto do diff).
+          Se nenhum problema for encontrado nesta seção, escreva 'Nenhuma sugestão de melhoria específica encontrada nesta revisão.' DEPOIS deste marcador de seção.
+          Não faça saudações em nenhuma das seções.]
+
           Diff:
           $COMMIT_DIFF"
 
@@ -59,8 +82,8 @@ jobs:
               }]
             }],
             "generationConfig": {
-              "temperature": 0.7,
-              "maxOutputTokens": 250
+              "temperature": 0.7, 
+              "maxOutputTokens": 500 
             }
           }
           EOF
@@ -79,7 +102,11 @@ jobs:
           if [ -z "$GENERATED_TEXT" ] && ! echo "$RESPONSE" | jq -e '.candidates[0].content.parts[0].text' > /dev/null; then
             ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.error.message // "Erro desconhecido ao gerar changelog ou texto vazio retornado."')
             echo "::warning file=$0,line=$LINENO::Falha ao gerar texto com Gemini. Resposta: $RESPONSE. Mensagem de erro: $ERROR_MESSAGE"
-            GENERATED_TEXT="Falha ao gerar resumo das alterações pela IA."
+            # Fornecer um fallback estruturado para o script de atualização do PR
+            GENERATED_TEXT="**Resumo das Alterações (para o changelog):**\nFalha ao gerar resumo pela IA.\n\n**Sugestões de Revisão de Código:**\nFalha ao gerar sugestões de revisão pela IA."
+          elif [ -z "$GENERATED_TEXT" ]; then
+            echo "::warning file=$0,line=$LINENO::Gemini retornou texto vazio."
+            GENERATED_TEXT="**Resumo das Alterações (para o changelog):**\nIA retornou resposta vazia.\n\n**Sugestões de Revisão de Código:**\nIA retornou resposta vazia."
           fi
           
           TRIMMED_GENERATED_TEXT=$(echo "$GENERATED_TEXT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
@@ -92,19 +119,12 @@ jobs:
       - name: Update PR Body
         uses: actions/github-script@v7
         env:
-          GENERATED_CHANGELOG_FROM_API: ${{ steps.call_gemini.outputs.generated_text }}
+          GENERATED_CONTENT_FROM_API: ${{ steps.call_gemini.outputs.generated_text }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            // 'core' já está disponível globalmente aqui, não precisa do require.
-            const generatedChangelogRaw = process.env.GENERATED_CHANGELOG_FROM_API || "";
-            const generatedChangelog = generatedChangelogRaw.trim();
-            const fallbackErrorMessage = "Falha ao gerar resumo das alterações pela IA.";
-
-            if (!generatedChangelog || generatedChangelog === fallbackErrorMessage) {
-              console.log("Nenhum changelog significativo gerado ou ocorreu um erro. Não atualizando o PR.");
-              return; 
-            }
+            const fullGeneratedContentRaw = process.env.GENERATED_CONTENT_FROM_API || "";
+            const fullGeneratedContent = fullGeneratedContentRaw.trim();
 
             const prNumber = context.issue.number;
             const { data: pr } = await github.rest.pulls.get({
@@ -114,38 +134,97 @@ jobs:
             });
 
             let currentBody = pr.body || "";
-            const descriptionMarker = "## Descrição";
-            const generatedChangelogHeader = "\n\n**Resumo das Alterações (Gerado por IA):**\n";
-            const fullGeneratedContent = generatedChangelogHeader + generatedChangelog;
+            const descriptionMarker = "## Descrição"; // Seu marcador principal no template de PR
 
-            const aiContentMarkerStart = "<!-- AI_GENERATED_CHANGELOG_START -->";
-            const aiContentMarkerEnd = "<!-- AI_GENERATED_CHANGELOG_END -->";
+            // Marcadores para as seções geradas pela IA
+            const summaryMarker = "**Resumo das Alterações (para o changelog):**";
+            const reviewSuggestionsMarker = "**Sugestões de Revisão de Código:**";
+            
+            let summaryContent = "Falha ao extrair resumo da IA.";
+            let reviewContent = "Falha ao extrair sugestões de revisão da IA.";
+
+            if (fullGeneratedContent) {
+              const summaryIndex = fullGeneratedContent.indexOf(summaryMarker);
+              const reviewIndex = fullGeneratedContent.indexOf(reviewSuggestionsMarker);
+
+              if (summaryIndex !== -1 && reviewIndex !== -1 && summaryIndex < reviewIndex) {
+                summaryContent = fullGeneratedContent.substring(summaryIndex + summaryMarker.length, reviewIndex).trim();
+                reviewContent = fullGeneratedContent.substring(reviewIndex + reviewSuggestionsMarker.length).trim();
+              } else if (summaryIndex !== -1) { // Caso apenas o resumo seja encontrado
+                summaryContent = fullGeneratedContent.substring(summaryIndex + summaryMarker.length).trim();
+                reviewContent = "Seção de sugestões de revisão não encontrada na resposta da IA.";
+              } else if (fullGeneratedContent.includes("Falha ao gerar") || fullGeneratedContent.includes("IA retornou resposta vazia")) {
+                 // Usa o texto de fallback diretamente se for uma falha conhecida
+                summaryContent = "Falha ao gerar resumo das alterações pela IA.";
+                reviewContent = "Falha ao gerar sugestões de revisão pela IA.";
+              } else if (fullGeneratedContent) {
+                // Se os marcadores não forem encontrados, mas há conteúdo, usa-o como revisão geral
+                // e um resumo padrão. Isso é um fallback.
+                console.warn("Marcadores de seção da IA não encontrados. Usando conteúdo completo como sugestões e um resumo padrão.");
+                summaryContent = "Resumo gerado automaticamente."; // Ou deixe em branco.
+                reviewContent = fullGeneratedContent;
+              }
+            }
+            
+            // Verifica se o conteúdo extraído é apenas a mensagem de falha padrão do passo anterior
+            const isFallbackSummary = summaryContent.includes("Falha ao gerar") || summaryContent.includes("IA retornou resposta vazia");
+            const isFallbackReview = reviewContent.includes("Falha ao gerar") || reviewContent.includes("IA retornou resposta vazia");
+
+            if (isFallbackSummary && isFallbackReview && summaryContent === "Falha ao gerar resumo das alterações pela IA.") {
+                console.log("Falha completa da IA detectada. Não atualizando o PR com mensagens de erro genéricas.");
+                return; // Não atualiza se a IA falhou completamente e temos apenas as mensagens de erro do script
+            }
+
+
+            // Monta o conteúdo final para o PR
+            let finalAiOutput = "";
+            if (summaryContent && !isFallbackSummary) { // Só adiciona se não for o fallback de falha
+                finalAiOutput += `\n\n${summaryMarker}\n${summaryContent}`;
+            } else if (summaryContent) { // Adiciona mesmo se for fallback, para indicar a tentativa
+                 finalAiOutput += `\n\n${summaryMarker}\n${summaryContent}`;
+            }
+
+            if (reviewContent && !isFallbackReview) { // Só adiciona se não for o fallback de falha
+                 finalAiOutput += `\n\n${reviewSuggestionsMarker}\n${reviewContent}`;
+            } else if (reviewContent) { // Adiciona mesmo se for fallback
+                 finalAiOutput += `\n\n${reviewSuggestionsMarker}\n${reviewContent}`;
+            }
+            
+            if (!finalAiOutput.trim()) {
+              console.log("Nenhum conteúdo significativo da IA para adicionar ao PR.");
+              return;
+            }
+
+            const aiContentWrapperStart = "\n\n<!-- AI_GENERATED_CONTENT_START -->";
+            const aiContentWrapperEnd = "<!-- AI_GENERATED_CONTENT_END -->";
+            const contentToInsert = aiContentWrapperStart + finalAiOutput + "\n" + aiContentWrapperEnd;
             
             let newBody;
+            const existingAiBlockStartIndex = currentBody.indexOf(aiContentWrapperStart);
+            const existingAiBlockEndIndex = currentBody.indexOf(aiContentWrapperEnd);
 
-            const startIndex = currentBody.indexOf(aiContentMarkerStart);
-            const endIndex = currentBody.indexOf(aiContentMarkerEnd);
-
-            if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
-              newBody = currentBody.substring(0, startIndex) + 
-                        aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd + 
-                        currentBody.substring(endIndex + aiContentMarkerEnd.length);
-              console.log("Substituindo changelog gerado por IA existente.");
+            if (existingAiBlockStartIndex !== -1 && existingAiBlockEndIndex !== -1 && existingAiBlockStartIndex < existingAiBlockEndIndex) {
+              // Substitui o bloco de conteúdo da IA existente
+              newBody = currentBody.substring(0, existingAiBlockStartIndex) + 
+                        contentToInsert + 
+                        currentBody.substring(existingAiBlockEndIndex + aiContentWrapperEnd.length);
+              console.log("Substituindo conteúdo gerado por IA existente.");
             } else {
+              // Insere o novo conteúdo abaixo de "## Descrição"
               const descriptionIndex = currentBody.indexOf(descriptionMarker);
               if (descriptionIndex !== -1) {
                 const insertPosition = descriptionIndex + descriptionMarker.length;
                 newBody = currentBody.substring(0, insertPosition) +
-                          "\n" + aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd +
+                          contentToInsert +
                           currentBody.substring(insertPosition);
-                console.log("Inserindo novo changelog gerado por IA abaixo de '## Descrição'.");
+                console.log("Inserindo novo conteúdo gerado por IA abaixo de '## Descrição'.");
               } else {
-                console.warn(`Marcador '${descriptionMarker}' não encontrado no corpo do PR. Adicionando changelog no início.`);
-                newBody = aiContentMarkerStart + "\n" + fullGeneratedContent + "\n" + aiContentMarkerEnd + "\n\n" + currentBody;
+                console.warn(`Marcador '${descriptionMarker}' não encontrado no corpo do PR. Adicionando conteúdo da IA no início.`);
+                newBody = contentToInsert + "\n\n" + currentBody;
               }
             }
 
-            if (newBody !== currentBody) {
+            if (newBody && newBody !== currentBody) {
               try {
                 await github.rest.pulls.update({
                   owner: context.repo.owner,
@@ -159,5 +238,5 @@ jobs:
                 core.setFailed(`Erro ao atualizar o corpo do PR: ${error.message}`);
               }
             } else {
-              console.log("Nenhuma alteração necessária no corpo do PR.");
+              console.log("Nenhuma alteração necessária no corpo do PR (conteúdo gerado pode ser o mesmo ou não houve mudança significativa).");
             }
