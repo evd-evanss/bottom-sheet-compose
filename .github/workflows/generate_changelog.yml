@@ -40,10 +40,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COMMIT_DIFF_TEXT: ${{ steps.get_pr_diff_text.outputs.diff_for_ai }}
         run: |
-          THE_ACTUAL_PROMPT="Você é um assistente de revisão de código e gerador de changelog.
-          Analise o seguinte diff de um Pull Request.
+          THE_ACTUAL_PROMPT="Você é um assistente especialista em revisão de código Kotlin e Jetpack Compose e gerador de changelog.
+          Analise o seguinte diff de um Pull Request com FOCO PRIMÁRIO em identificar erros de sintaxe que impediriam a compilação do código.
 
-          Seu output DEVE CONTER DUAS PARTES PRINCIPAIS:
+          PRIORIDADES PARA SUGESTÕES DE REVISÃO:
+          1.  **ERROS DE SINTAXE CRÍTICOS:** Identifique e aponte quaisquer erros de sintaxe em Kotlin ou Jetpack Compose que resultariam em falha de compilação. Seja específico sobre o erro.
+          2.  **BUGS E ERROS DE LÓGICA:** Problemas que podem levar a comportamento incorreto em tempo de execução.
+          3.  **MÁS PRÁTICAS EM JETPACK COMPOSE:** Uso incorreto de Composable functions, problemas de estado, recomposições desnecessárias, etc.
+          4.  **CÓDIGO REDUNDANTE OU OTIMIZÁVEL:** Trechos que podem ser simplificados ou melhorados em performance/legibilidade.
+          5.  **COMENTÁRIOS DESNECESSÁRIOS OU OBSOLETOS.**
+          6.  **MELHORIAS DE LEGIBILIDADE E CONVENÇÕES DE CÓDIGO KOTLIN.**
+
+          Seu output DEVE CONTER DUAS PARTES PRINCIPAIS no formato JSON:
           1. Uma chave JSON chamada \"review_suggestions\" contendo um array de objetos.
           2. Uma chave JSON chamada \"pull_request_summary\" contendo uma string de texto para o resumo do PR.
 
@@ -51,18 +59,19 @@ jobs:
           {
             \"review_suggestions\": [
               {
-                \"file_path\": \"caminho/para/o/arquivo.ext\",
-                \"line_number_hint\": \"Número da linha aproximado no arquivo APÓS a mudança, ou um trecho de código alterado para ajudar a localizar. Ex: 15 ou 'if (condicao) {'\",
-                \"suggestion_text\": \"Sua sugestão de melhoria aqui.\"
+                \"file_path\": \"caminho/para/o/arquivo.kt\",
+                \"line_number_hint\": \"Número da linha aproximado no arquivo APÓS a mudança, ou um trecho de código alterado para ajudar a localizar. Ex: 15 ou 'fun minhaFuncao() {'\",
+                \"suggestion_text\": \"[ERRO DE SINTAXE] Sua sugestão de correção aqui. Ex: 'Falta o bloco de abertura { para a função.' ou '[MÁ PRÁTICA COMPOSE] Sugestão...'\"
               }
+              // ... mais sugestões
             ],
             \"pull_request_summary\": \"**Resumo das Alterações (Gerado por IA):**\n- Mudança A...\n- Correção B...\"
           }
 
           Para \"review_suggestions\":
-          - Priorize problemas como: bugs, erros de lógica, código redundante, comentários desnecessários, melhorias de legibilidade.
           - Se nenhum problema for encontrado, \"review_suggestions\" deve ser um array vazio [].
-          - Seja conciso e direto nas sugestões.
+          - Prefixar sugestões de erros de sintaxe com \"[ERRO DE SINTAXE]\".
+          - Prefixar sugestões específicas de Compose com \"[COMPOSE]\".
 
           Para \"pull_request_summary\":
           - Gere um breve descritivo das principais funcionalidades adicionadas, corrigidas ou impactos.
@@ -80,8 +89,8 @@ jobs:
                 }]
               }],
               "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 2000,
+                "temperature": 0.4, # Levemente reduzida para tentar ser mais factual com erros
+                "maxOutputTokens": 2500, # Aumentado um pouco para acomodar prompts/respostas mais detalhados
                 "responseMimeType": "application/json" 
               }
             }')
@@ -308,7 +317,7 @@ jobs:
                   owner,
                   repo,
                   pull_number: prNumber,
-                  commit_id: headSha,
+                  commit_id: headSha, 
                   event: 'COMMENT',
                   body: "Sugestões de revisão de código geradas por IA." + (unmappedSuggestionsLog ? "\n\nAlgumas sugestões não puderam ser mapeadas para linhas específicas (ver logs da Action para detalhes)." : ""),
                   comments: reviewComments,
