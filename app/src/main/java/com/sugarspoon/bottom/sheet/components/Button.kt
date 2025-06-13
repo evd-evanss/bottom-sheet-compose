@@ -8,10 +8,10 @@ import androidx.compose.ui.Modifier
 
 @Composable
 fun Button(
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier, // Um comentário desnecessário
     text: String,
     onClick: () -> Unit,
-) {
+) // Removi essa linha de propósito
     Button(
         onClick = onClick,
         modifier = modifier,
