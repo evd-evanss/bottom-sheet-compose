@@ -2,7 +2,7 @@ name: Generate Changelog and Update PR Body
 
 on:
   pull_request:
-    types: [opened, synchronize] # 'opened' para novos PRs, 'synchronize' para atualizações no PR
+    types: [opened, synchronize, reopened] # Adicionado 'reopened' para mais flexibilidade no trigger
 
 jobs:
   generate_and_update_pr:
@@ -66,7 +66,7 @@ jobs:
             }],
             "generationConfig": {
               "temperature": 0.7,
-              "maxOutputTokens": 250 # Reduzido um pouco para economizar tokens de output
+              "maxOutputTokens": 250
             }
           }
           EOF
@@ -87,8 +87,8 @@ jobs:
           # Parseando a resposta com jq e tratando possíveis erros de parsing ou ausência de texto
           GENERATED_TEXT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // ""')
 
-          if [ -z "$GENERATED_TEXT" ]; then
-            # Se o texto gerado estiver vazio, tenta extrair mensagem de erro da API, se houver
+          # Verifica se o texto está genuinamente ausente na resposta ou se ocorreu um erro na API
+          if [ -z "$GENERATED_TEXT" ] && ! echo "$RESPONSE" | jq -e '.candidates[0].content.parts[0].text' > /dev/null; then
             ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.error.message // "Erro desconhecido ao gerar changelog ou texto vazio retornado."')
             echo "::warning file=$0,line=$LINENO::Falha ao gerar texto com Gemini. Resposta: $RESPONSE. Mensagem de erro: $ERROR_MESSAGE"
             GENERATED_TEXT="Falha ao gerar resumo das alterações pela IA." # Mensagem de fallback
@@ -111,12 +111,10 @@ jobs:
             const fallbackErrorMessage = "Falha ao gerar resumo das alterações pela IA.";
 
             if (!generatedChangelog || generatedChangelog === fallbackErrorMessage) {
-              console.log("Nenhum changelog significativo gerado ou ocorreu um erro. Não atualizando o PR ou usando mensagem de fallback.");
-              // Você pode decidir se quer ou não adicionar a fallbackErrorMessage ao PR.
-              // Neste exemplo, não adicionaremos nada se a IA falhar de forma clara.
-              // Se quiser adicionar a mensagem de erro, descomente a linha abaixo e ajuste a lógica.
-              // const fullGeneratedContent = "\n\n**Resumo das Alterações (Gerado por IA):**\n" + fallbackErrorMessage;
-              // (Continue com a lógica para adicionar 'fullGeneratedContent' se desejar)
+              console.log("Nenhum changelog significativo gerado ou ocorreu um erro. Não atualizando o PR.");
+              // Se você quiser que a mensagem de erro da IA seja adicionada ao PR,
+              // você precisaria ajustar esta lógica para construir 'fullGeneratedContent' com 'fallbackErrorMessage'.
+              // Por enquanto, ele simplesmente não atualiza se houver falha clara.
               return; 
             }
 
@@ -176,7 +174,10 @@ jobs:
                 console.log("Corpo do PR atualizado com sucesso.");
               } catch (error) {
                 console.error("Erro ao atualizar o corpo do PR:", error);
-                core.setFailed(`Erro ao atualizar o corpo do PR: ${error.message}`);
+                // A action falhará automaticamente se um erro não tratado ocorrer aqui.
+                // Para uma falha explícita com mensagem:
+                // const core = require('@actions/core');
+                // core.setFailed(`Erro ao atualizar o corpo do PR: ${error.message}`);
               }
             } else {
               console.log("Nenhuma alteração necessária no corpo do PR (changelog gerado pode ser o mesmo ou não houve mudança significativa).");
