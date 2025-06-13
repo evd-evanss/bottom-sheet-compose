@@ -10,8 +10,8 @@ import androidx.compose.ui.Modifier
 fun Button(
     modifier: Modifier = Modifier,
     text: String,
-    onClick: () -> Unit,
-) {
+    onClick: () -> Unit,// COmentário desnecessário
+)
     Button(
         onClick = onClick,
         modifier = modifier,
