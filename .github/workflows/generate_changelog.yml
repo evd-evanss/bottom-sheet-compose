@@ -50,7 +50,9 @@ jobs:
           4.  **CÓDIGO REDUNDANTE OU OTIMIZÁVEL:** Trechos que podem ser simplificados ou melhorados em performance/legibilidade.
           5.  **COMENTÁRIOS DESNECESSÁRIOS OU OBSOLETOS.**
           6.  **MELHORIAS DE LEGIBILIDADE E CONVENÇÕES DE CÓDIGO KOTLIN.**
-          6.  **OS COMENTÁRIOS PRECISAM ESTAR EM PORTUGUÊS.**
+          7.  **OS COMENTÁRIOS PRECISAM ESTAR EM PORTUGUÊS.**
+          7.  **ERROS DE IMPORTS DE CLASSE R.** Sempre que encontrar esse import -> com.sugarspoon.bottom.sheets.R, ele deve estar acompanhado de um alias
+          dessa forma import com.sugarspoon.bottom.sheets.R as SheetsR
 
           Seu output DEVE CONTER DUAS PARTES PRINCIPAIS no formato JSON:
           1. Uma chave JSON chamada \"review_suggestions\" contendo um array de objetos.
