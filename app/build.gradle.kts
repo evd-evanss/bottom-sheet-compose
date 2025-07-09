@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.sugarspoon.bottom.sheet"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.sugarspoon.bottom.sheet"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
